@@ -2,6 +2,9 @@ name: 打造我的安卓 AI 聊天软件
 on:
   workflow_dispatch: # 允许手动点击按钮触发打包
 
+env:
+  ANDROID_HOME: /usr/local/lib/android/sdk
+
 jobs:
   build:
     runs-on: ubuntu-latest # 云端 Linux 机器
@@ -17,10 +20,15 @@ jobs:
 
       - name: 配置 Android SDK 并安装 NDK
         run: |
+          # 下载 Android 命令行工具
+          mkdir -p $ANDROID_HOME/cmdline-tools
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdline-tools.zip
+          unzip -q /tmp/cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools
+          mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+          export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
+          # 接受许可并安装所需组件
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager "ndk;27.3.13750724" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-        env:
-          ANDROID_HOME: /usr/local/lib/android/sdk
 
       - name: 给打包工具赋予执行权限
         run: chmod +x geniex_chat_android/gradlew
@@ -29,8 +37,6 @@ jobs:
         run: |
           cd geniex_chat_android
           ./gradlew assembleDebug --no-daemon
-        env:
-          ANDROID_HOME: /usr/local/lib/android/sdk
 
       - name: 把打包好的 APK 传给我
         uses: actions/upload-artifact@v4
