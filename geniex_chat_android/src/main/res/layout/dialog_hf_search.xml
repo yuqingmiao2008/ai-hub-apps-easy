@@ -99,7 +99,7 @@
                 android:layout_height="36dp"
                 android:layout_weight="1"
                 android:background="@drawable/btn_rounded_black_bg_18"
-                android:text="Add & Download"
+                android:text="Add &amp; Download"
                 android:textAllCaps="false"
                 android:textColor="#FFFFFF" />
 
