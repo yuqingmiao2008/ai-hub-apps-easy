@@ -374,7 +374,7 @@ class MainActivity : FragmentActivity() {
                             tokenizer_path = "",
                             config = conf,
                             runtime_id = "llama_cpp",
-                            compute_unit = resolvedDeviceId ?: ComputeUnitValue.NPU.value,
+                            compute_unit = deviceId ?: ComputeUnitValue.NPU.value,
                         ),
                     ).build()
                     .onSuccess { wrapper ->

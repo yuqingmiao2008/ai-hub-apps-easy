@@ -47,7 +47,7 @@ object HuggingFaceApi {
         val url = "$BASE/models?search=${urlEncode(q)}&filter=gguf&limit=$limit&sort=downloads&direction=-1"
         return runCatching {
             val body = httpGet(url)
-            json.parseToJsonElement(body).jsonArray.map { json.decodeFromJsonElement<HfModel>(it) }
+            json.decodeFromString<List<HfModel>>(body)
         }.getOrElse {
             Log.e(TAG, "searchModels failed: $it")
             emptyList()
@@ -62,7 +62,7 @@ object HuggingFaceApi {
         val url = "$BASE/models/${urlEncodePath(modelId)}/tree/main"
         return runCatching {
             val body = httpGet(url)
-            json.parseToJsonElement(body).jsonArray.map { json.decodeFromJsonElement<HfFile>(it) }
+            json.decodeFromString<List<HfFile>>(body)
         }.getOrElse {
             Log.e(TAG, "listFiles failed for $modelId: $it")
             emptyList()

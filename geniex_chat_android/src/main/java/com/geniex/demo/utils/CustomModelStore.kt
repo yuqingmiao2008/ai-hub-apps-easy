@@ -8,14 +8,8 @@ import android.content.Context
 import android.util.Log
 import com.geniex.demo.bean.ModelData
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.decodeFromJsonElement
-import kotlinx.serialization.json.encodeToJsonElement
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.put
+import kotlinx.serialization.json.decodeFromString
+import kotlinx.serialization.json.encodeToString
 
 /**
  * Persists user-added models (HF search results and locally imported
@@ -29,7 +23,7 @@ class CustomModelStore(context: Context) {
     fun load(): MutableList<ModelData> {
         val raw = prefs.getString(KEY_CUSTOM_MODELS, null) ?: return mutableListOf()
         return runCatching {
-            json.parseToJsonElement(raw).jsonArray.map { json.decodeFromJsonElement<ModelData>(it) }.toMutableList()
+            json.decodeFromString<List<ModelData>>(raw).toMutableList()
         }.getOrElse {
             Log.e(TAG, "failed to parse custom models: $it")
             mutableListOf()
@@ -37,10 +31,9 @@ class CustomModelStore(context: Context) {
     }
 
     fun save(models: List<ModelData>) {
-        val arr = buildJsonArray {
-            models.filter { it.isCustom }.forEach { add(json.encodeToJsonElement(it)) }
-        }
-        prefs.edit().putString(KEY_CUSTOM_MODELS, arr.toString()).apply()
+        val custom = models.filter { it.isCustom }
+        val raw = json.encodeToString(custom)
+        prefs.edit().putString(KEY_CUSTOM_MODELS, raw).apply()
     }
 
     fun add(model: ModelData): List<ModelData> {
