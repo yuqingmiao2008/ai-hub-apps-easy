@@ -55,6 +55,8 @@ import com.geniex.demo.utils.ExecShell
 import com.geniex.demo.utils.GgufVisionConfig
 import com.geniex.demo.utils.GgufVisionReader
 import com.geniex.demo.utils.ImgUtil
+import com.geniex.demo.utils.CustomModelStore
+import com.geniex.demo.utils.HuggingFaceApi
 import com.geniex.demo.utils.inflate
 import com.geniex.sdk.GenieXSdk
 import com.geniex.sdk.LlmWrapper
@@ -93,6 +95,10 @@ class MainActivity : FragmentActivity() {
     private lateinit var btnLoadModel: Button
     private lateinit var btnUnloadModel: Button
     private lateinit var btnStop: Button
+    private lateinit var btnHfSearch: Button
+    private lateinit var btnImportModel: Button
+    private lateinit var btnDeleteCustom: Button
+    private lateinit var customModelStore: CustomModelStore
     private lateinit var etInput: EditText
     private lateinit var btnSend: Button
     private lateinit var btnClearHistory: Button
@@ -194,6 +200,9 @@ class MainActivity : FragmentActivity() {
         btnLoadModel = findViewById(R.id.btn_load_model)
         btnUnloadModel = findViewById(R.id.btn_unload_model)
         btnStop = findViewById(R.id.btn_stop)
+        btnHfSearch = findViewById(R.id.btn_hf_search)
+        btnImportModel = findViewById(R.id.btn_import_model)
+        btnDeleteCustom = findViewById(R.id.btn_delete_custom)
         etInput = findViewById(R.id.et_input)
         btnAddImage = findViewById(R.id.btn_add_image)
 
@@ -245,7 +254,14 @@ class MainActivity : FragmentActivity() {
      * is queried from the Rust model manager, not tracked client-side.
      */
     private fun initData() {
+        customModelStore = CustomModelStore(this)
         parseModelList()
+        // Merge user-added models (HF search + local import) after the
+        // built-in catalog so they appear at the bottom of the spinner.
+        val custom = customModelStore.load()
+        if (custom.isNotEmpty()) {
+            modelList = modelList + custom
+        }
         initGenieXSdk()
     }
 
@@ -318,7 +334,13 @@ class MainActivity : FragmentActivity() {
      * and `qualcomm/<repo>` map to the same on-disk entry) and returns
      * null while the pull is still in `.inflight/`.
      */
-    private suspend fun isModelDownloaded(modelData: ModelData): Boolean = ModelManagerWrapper.getPaths(modelData.modelName) != null
+    private suspend fun isModelDownloaded(modelData: ModelData): Boolean {
+        // Locally imported models are always "available" — the file is on disk.
+        if (!modelData.localPath.isNullOrEmpty()) {
+            return File(modelData.localPath).exists()
+        }
+        return ModelManagerWrapper.getPaths(modelData.modelName) != null
+    }
 
     private fun loadModel(
         selectModelData: ModelData,
@@ -328,6 +350,42 @@ class MainActivity : FragmentActivity() {
     ) {
         modelScope.launch {
             resetLoadState()
+            // Locally imported GGUF: bypass the model manager and construct
+            // the input directly. The file is already on disk and needs no
+            // pull. GGUF embeds its tokenizer, so tokenizer_path stays empty.
+            val localFile = selectModelData.localPath
+            if (!localFile.isNullOrEmpty()) {
+                val file = File(localFile)
+                if (!file.exists()) {
+                    onLoadModelFailed("local model file not found: ${file.name}")
+                    return@launch
+                }
+                val conf = ModelConfig(
+                    nCtx = 1024,
+                    nGpuLayers = nGpuLayers,
+                    enable_thinking = enableThinking,
+                )
+                LlmWrapper
+                    .builder()
+                    .llmCreateInput(
+                        LlmCreateInput(
+                            model_name = selectModelData.modelName,
+                            model_path = file.absolutePath,
+                            tokenizer_path = "",
+                            config = conf,
+                            runtime_id = "llama_cpp",
+                            compute_unit = resolvedDeviceId ?: ComputeUnitValue.NPU.value,
+                        ),
+                    ).build()
+                    .onSuccess { wrapper ->
+                        isLoadLlmModel = true
+                        llmWrapper = wrapper
+                        onLoadModelSuccess("local model loaded: ${file.name}")
+                    }.onFailure { error ->
+                        onLoadModelFailed(error.message.toString())
+                    }
+                return@launch
+            }
             val paths = ModelManagerWrapper.getPaths(selectModelData.modelName)
             if (paths == null) {
                 onLoadModelFailed("model paths unavailable — pull it first")
@@ -818,6 +876,12 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }
+        /*
+         * Extended: Hugging Face search, local GGUF import, custom model delete.
+         */
+        btnHfSearch.setOnClickListener { showHfSearchDialog() }
+        btnImportModel.setOnClickListener { openLocalModelPicker() }
+        btnDeleteCustom.setOnClickListener { showDeleteCustomDialog() }
     }
 
     private fun startLoadModel(selectModelData: ModelData) {
@@ -1033,6 +1097,12 @@ class MainActivity : FragmentActivity() {
         super.onActivityResult(requestCode, resultCode, data)
 
         var bitmap: Bitmap? = null
+        if (requestCode == REQUEST_IMPORT_GGUF) {
+            if (resultCode == Activity.RESULT_OK && data != null && data.data != null) {
+                handleLocalModelImport(data.data!!)
+            }
+            return
+        }
         if (requestCode == 1) {
             if (resultCode == Activity.RESULT_OK && data != null) {
                 val inputStream = contentResolver.openInputStream(data.data!!)
@@ -1251,8 +1321,254 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    // ------------------------------------------------------------------
+    // Extended features: Hugging Face search, local import, custom delete
+    // ------------------------------------------------------------------
+
+    private val hfScope = CoroutineScope(Dispatchers.IO)
+
+    /** Show the Hugging Face model search & add dialog. */
+    private fun showHfSearchDialog() {
+        val dialogView = layoutInflater.inflate(R.layout.dialog_hf_search, null)
+        val etSearch = dialogView.findViewById<EditText>(R.id.et_hf_search)
+        val btnGo = dialogView.findViewById<Button>(R.id.btn_hf_search_go)
+        val tvStatus = dialogView.findViewById<TextView>(R.id.tv_hf_status)
+        val rvResults = dialogView.findViewById<RecyclerView>(R.id.rv_hf_results)
+        val llFilePicker = dialogView.findViewById<LinearLayout>(R.id.ll_hf_file_picker)
+        val tvSelectedRepo = dialogView.findViewById<TextView>(R.id.tv_hf_selected_repo)
+        val spFiles = dialogView.findViewById<Spinner>(R.id.sp_hf_files)
+        val btnAdd = dialogView.findViewById<Button>(R.id.btn_hf_add_model)
+        val btnBack = dialogView.findViewById<Button>(R.id.btn_hf_back)
+
+        rvResults.layoutManager = androidx.recyclerview.widget.LinearLayoutManager(this)
+        var selectedRepoId = ""
+        var ggufFiles = listOf<HuggingFaceApi.HfFile>()
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Hugging Face Model Search")
+            .setView(dialogView)
+            .setNegativeButton("Close", null)
+            .create()
+
+        fun runSearch(query: String) {
+            tvStatus.text = "Searching..."
+            hfScope.launch {
+                val results = HuggingFaceApi.searchModels(query)
+                runOnUiThread {
+                    if (results.isEmpty()) {
+                        tvStatus.text = "No GGUF models found for '$query'"
+                        rvResults.adapter = null
+                    } else {
+                        tvStatus.text = "${results.size} models found (tap to select)"
+                        rvResults.adapter = HfModelAdapter(results) { model ->
+                            selectedRepoId = model.id
+                            tvSelectedRepo.text = "Repo: ${model.id}"
+                            tvStatus.text = "Loading file list..."
+                            llFilePicker.visibility = View.VISIBLE
+                            hfScope.launch {
+                                ggufFiles = HuggingFaceApi.listGgufFiles(model.id)
+                                runOnUiThread {
+                                    if (ggufFiles.isEmpty()) {
+                                        tvStatus.text = "No .gguf files found in this repo"
+                                        btnAdd.isEnabled = false
+                                    } else {
+                                        tvStatus.text = "${ggufFiles.size} GGUF files — pick one"
+                                        btnAdd.isEnabled = true
+                                        val labels = ggufFiles.map { f ->
+                                            val mb = f.size / (1024 * 1024)
+                                            "${f.path}  (${mb} MB)"
+                                        }
+                                        spFiles.adapter = android.widget.ArrayAdapter(
+                                            this@MainActivity,
+                                            android.R.layout.simple_spinner_dropdown_item,
+                                            labels,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        btnGo.setOnClickListener {
+            val q = etSearch.text.toString().trim()
+            if (q.isNotEmpty()) runSearch(q)
+        }
+        etSearch.setOnEditorActionListener { _, _, _ ->
+            btnGo.performClick()
+            true
+        }
+        btnBack.setOnClickListener {
+            llFilePicker.visibility = View.GONE
+            selectedRepoId = ""
+        }
+        btnAdd.setOnClickListener {
+            if (selectedRepoId.isEmpty() || ggufFiles.isEmpty()) return@setOnClickListener
+            val file = ggufFiles[spFiles.selectedItemPosition]
+            val quant = extractQuantFromFilename(file.path)
+            val modelId = "hf_${selectedRepoId.replace("/", "_")}_$quant"
+            val displayName = "${selectedRepoId.substringAfter('/')} ($quant)"
+            val newModel = ModelData(
+                id = modelId,
+                displayName = displayName,
+                modelName = selectedRepoId,
+                type = "chat",
+                runtime = "llama_cpp",
+                quant = quant,
+                hub = "HUGGINGFACE",
+                isCustom = true,
+            )
+            customModelStore.add(newModel)
+            refreshModelSpinner()
+            dialog.dismiss()
+            // Auto-select and start download for convenience.
+            selectModelId = modelId
+            val pos = modelList.indexOfFirst { it.id == modelId }
+            if (pos >= 0) spModelList.setSelection(pos)
+            downloadModel(newModel)
+            Toast.makeText(this, "Added & downloading: $displayName", Toast.LENGTH_SHORT).show()
+        }
+
+        dialog.show()
+    }
+
+    /** Extract a quantization label (e.g. Q4_0, Q5_K_M) from a GGUF filename. */
+    private fun extractQuantFromFilename(filename: String): String {
+        val upper = filename.uppercase()
+        val patterns = listOf("Q8_0", "Q6_K", "Q5_K_M", "Q5_K_S", "Q5_0", "Q4_K_M", "Q4_K_S", "Q4_0", "Q3_K_M", "Q3_K_S", "Q2_K", "F16", "F32")
+        for (p in patterns) {
+            if (upper.contains(p)) return p
+        }
+        // Fallback: use the filename without extension as quant label.
+        return filename.substringAfterLast('/').substringBeforeLast('.').takeLast(20)
+    }
+
+    /** Open the Storage Access Framework file picker for .gguf import. */
+    private fun openLocalModelPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            type = "*/*"
+            addCategory(Intent.CATEGORY_OPENABLE)
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/octet-stream", "*/*"))
+        }
+        startActivityForResult(intent, REQUEST_IMPORT_GGUF)
+    }
+
+    /** Copy the selected GGUF into app-private storage and register it. */
+    private fun handleLocalModelImport(uri: Uri) {
+        val displayName = contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            cursor.moveToFirst()
+            if (nameIndex >= 0) cursor.getString(nameIndex) else "imported_model.gguf"
+        } ?: "imported_model.gguf"
+
+        if (!displayName.endsWith(".gguf", ignoreCase = true)) {
+            Toast.makeText(this, "Please select a .gguf file", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        modelScope.launch {
+            try {
+                val customDir = File(filesDir, "custom_models").apply { mkdirs() }
+                val destFile = File(customDir, displayName)
+                contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(destFile).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                if (!destFile.exists() || destFile.length() == 0L) {
+                    runOnUiThread { Toast.makeText(this@MainActivity, "Import failed: empty file", Toast.LENGTH_LONG).show() }
+                    return@launch
+                }
+                val quant = extractQuantFromFilename(displayName)
+                val baseName = displayName.substringBeforeLast('.')
+                val modelId = "local_${baseName.replace("[^A-Za-z0-9_]".toRegex(), "_")}"
+                val newModel = ModelData(
+                    id = modelId,
+                    displayName = "$baseName (local)",
+                    modelName = "local/$baseName",
+                    type = "chat",
+                    runtime = "llama_cpp",
+                    quant = quant,
+                    hub = "LOCAL",
+                    isCustom = true,
+                    localPath = destFile.absolutePath,
+                )
+                customModelStore.add(newModel)
+                runOnUiThread {
+                    refreshModelSpinner()
+                    val pos = modelList.indexOfFirst { it.id == modelId }
+                    if (pos >= 0) spModelList.setSelection(pos)
+                    Toast.makeText(this@MainActivity, "Imported: $displayName (${destFile.length() / (1024 * 1024)} MB)", Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "local import failed: $e")
+                runOnUiThread { Toast.makeText(this@MainActivity, "Import failed: ${e.message}", Toast.LENGTH_LONG).show() }
+            }
+        }
+    }
+
+    /** Show a dialog to delete user-added custom models. */
+    private fun showDeleteCustomDialog() {
+        val custom = customModelStore.load()
+        if (custom.isEmpty()) {
+            Toast.makeText(this, "No custom models to delete", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val names = custom.map { it.displayName }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Delete Custom Model")
+            .setItems(names) { _, which ->
+                val target = custom[which]
+                if (hasLoadedModel() && selectModelId == target.id) {
+                    Toast.makeText(this, "Unload the model first", Toast.LENGTH_SHORT).show()
+                    return@setItems
+                }
+                // Delete local file if present
+                target.localPath?.let { path ->
+                    runCatching { File(path).delete() }
+                }
+                customModelStore.remove(target.id)
+                refreshModelSpinner()
+                Toast.makeText(this, "Deleted: ${target.displayName}", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** Rebuild modelList from built-in + custom, and refresh the spinner. */
+    private fun refreshModelSpinner() {
+        parseModelList()
+        val custom = customModelStore.load()
+        modelList = if (custom.isNotEmpty()) modelList + custom else modelList
+        spModelList.adapter =
+            object : SimpleAdapter(
+                this,
+                modelList.map {
+                    val map = mutableMapOf<String, String>()
+                    map["displayName"] = it.displayName
+                    map
+                },
+                R.layout.item_model,
+                arrayOf("displayName"),
+                intArrayOf(R.id.tv_model_id),
+            ) {}
+        spModelList.onItemSelectedListener =
+            object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    selectModelId = modelList[position].id
+                    messages.clear()
+                    adapter.notifyDataSetChanged()
+                    binding.rvChat.scrollToPosition(0)
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) { selectModelId = "" }
+            }
+    }
+
     companion object {
         private const val TAG = "GenieXDemo"
+        private const val REQUEST_IMPORT_GGUF = 3001
 
         /**
          * Square edge length used for image preprocessing when the mmproj GGUF

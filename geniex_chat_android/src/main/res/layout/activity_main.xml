@@ -101,6 +101,42 @@
             android:layout_height="wrap_content"
             android:text="test"
             android:visibility="gone" />
+        <!-- Extended model management: HF search + local import -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+            <Button
+                android:id="@+id/btn_hf_search"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginStart="16dp"
+                android:layout_marginEnd="8dp"
+                android:background="@drawable/btn_rounded_border_gray"
+                android:text="HF Search"
+                android:textAllCaps="false"
+                android:textColor="#1F1F1F" />
+            <Button
+                android:id="@+id/btn_import_model"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginEnd="8dp"
+                android:background="@drawable/btn_rounded_border_gray"
+                android:text="Import GGUF"
+                android:textAllCaps="false"
+                android:textColor="#1F1F1F" />
+            <Button
+                android:id="@+id/btn_delete_custom"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginEnd="8dp"
+                android:background="@drawable/btn_rounded_border_gray"
+                android:text="Del Custom"
+                android:textAllCaps="false"
+                android:textColor="#1F1F1F" />
+        </LinearLayout>
 
         <FrameLayout
             android:layout_width="match_parent"

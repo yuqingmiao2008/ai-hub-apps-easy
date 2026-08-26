@@ -48,6 +48,17 @@ data class ModelData(
      * pair with an explicit `chipset`.
      */
     val chipset: String? = null,
+    /**
+     * `true` for models added by the user via HF search or local import.
+     * Custom models are persisted separately from the built-in catalog.
+     */
+    val isCustom: Boolean = false,
+    /**
+     * Absolute path to a locally imported GGUF file. When non-null the
+     * loader bypasses `ModelManagerWrapper.getPaths` and constructs the
+     * input directly — the model is already on disk and needs no pull.
+     */
+    val localPath: String? = null,
 )
 
 /**
