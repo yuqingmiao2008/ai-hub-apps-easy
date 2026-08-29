@@ -41,7 +41,24 @@ jobs:
           ANDROID_HOME: /usr/local/lib/android/sdk
         run: |
           cd geniex_chat_android
-          ./gradlew assembleDebug --no-daemon
+          # Maven Central throttles the shared IP ranges of hosted runners with
+          # HTTP 429. That aborts Gradle during configuration — before a single
+          # source file is looked at — so a red build here says nothing about
+          # the code. Retry with a short backoff; the Gradle cache in ~/.gradle
+          # persists across attempts, so each retry needs fewer downloads.
+          for attempt in 1 2 3; do
+            echo "::group::gradle attempt ${attempt} of 3"
+            if ./gradlew assembleDebug --no-daemon; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            if [ "${attempt}" -lt 3 ]; then
+              echo "build failed; retrying after backing off"
+              sleep $((attempt * 45))
+            fi
+          done
+          exit 1
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
