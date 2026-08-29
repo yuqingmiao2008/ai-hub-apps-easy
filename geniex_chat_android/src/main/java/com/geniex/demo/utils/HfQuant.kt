@@ -11,32 +11,63 @@ package com.geniex.demo.utils
  * keeps `Q5_K_M` from collapsing into `Q5_K_S`.
  */
 object HfQuant {
+    /**
+     * Sorted longest-first so the token that covers the most characters wins.
+     * Without that ordering `BF16` matches as `F16` and `Q4_K_XL` as `Q4_0`'s
+     * cousin `Q4_K` — both are substrings of the label the user actually sees.
+     */
     private val KNOWN =
         listOf(
-            "Q8_0",
-            "Q6_K",
-            "Q5_K_M",
-            "Q5_K_S",
-            "Q5_0",
-            "Q5_1",
-            "Q4_K_M",
-            "Q4_K_S",
-            "Q4_0",
-            "Q4_1",
+            // Unsloth "UD" dynamic quants. Every unsloth GGUF repo ships these
+            // next to the regular ones, and they are what the smallest-file
+            // fallback would otherwise land on.
+            "IQ2_XXS",
+            "IQ3_XXS",
+            "IQ4_XS",
+            "IQ1_S",
+            "IQ1_M",
+            "IQ2_XS",
+            "IQ2_S",
+            "IQ2_M",
+            "IQ3_XS",
+            "IQ3_S",
+            "IQ3_M",
+            "IQ4_NL",
+            "Q2_K_XL",
+            "Q3_K_XL",
+            "Q4_K_XL",
+            "Q5_K_XL",
+            "Q6_K_XL",
+            "Q8_K_XL",
+            // llama.cpp standard quants
             "Q3_K_L",
             "Q3_K_M",
             "Q3_K_S",
+            "Q4_K_M",
+            "Q4_K_S",
+            "Q5_K_M",
+            "Q5_K_S",
             "Q2_K",
-            "IQ4_XS",
-            "IQ3_M",
+            "Q4_0",
+            "Q4_1",
+            "Q5_0",
+            "Q5_1",
+            "Q6_K",
+            "Q8_0",
             "BF16",
             "F16",
             "F32",
-        )
+        ).sortedByDescending { it.length }
 
     /** The quantization token in [filename], or null when none is present. */
     fun from(filename: String): String? {
-        val name = filename.substringAfterLast('/').uppercase()
+        // `UD-IQ2_XXS` and `Q2_K_XL` only differ from their plain siblings by
+        // the extra suffix, so drop the vendor prefix before matching.
+        val name =
+            filename
+                .substringAfterLast('/')
+                .uppercase()
+                .replace("UD-", "")
         return KNOWN.firstOrNull { name.contains(it) }
     }
 
