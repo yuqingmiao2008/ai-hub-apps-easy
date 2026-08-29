@@ -90,7 +90,11 @@ jobs:
       - name: Rename APK with build number
         run: |
           mkdir -p dist
-          mv apk/app-debug.apk "dist/geniex-chat-v1.0.${GITHUB_RUN_NUMBER}.apk"
+          cp apk/app-debug.apk "dist/geniex-chat-v1.0.${GITHUB_RUN_NUMBER}.apk"
+          # A second copy under a fixed name, so one permanent link always
+          # resolves to the newest build:
+          #   .../releases/latest/download/geniex-chat-latest.apk
+          cp apk/app-debug.apk "dist/geniex-chat-latest.apk"
           ls -lh dist
 
       - name: Publish GitHub Release
