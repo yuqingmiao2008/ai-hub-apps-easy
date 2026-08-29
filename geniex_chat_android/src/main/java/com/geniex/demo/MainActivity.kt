@@ -27,6 +27,7 @@ import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.AdapterView
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.ImageButton
@@ -47,13 +48,21 @@ import androidx.fragment.app.FragmentActivity
 import androidx.recyclerview.widget.RecyclerView
 import com.geniex.demo.bean.ModelData
 import com.geniex.demo.bean.getSupportPluginIds
+import com.geniex.demo.bean.hfRepoOrName
 import com.geniex.demo.bean.isNpuModel
+import com.geniex.demo.bean.isSelfDownloaded
+import com.geniex.demo.bean.isVision
 import com.geniex.demo.databinding.ActivityMainBinding
 import com.geniex.demo.databinding.DialogSelectPluginIdBinding
 import com.geniex.demo.listeners.CustomDialogInterface
 import com.geniex.demo.utils.ExecShell
 import com.geniex.demo.utils.GgufVisionConfig
 import com.geniex.demo.utils.GgufVisionReader
+import com.geniex.demo.utils.HfDownloader
+import com.geniex.demo.utils.HfLocalEntry
+import com.geniex.demo.utils.HfLocalStore
+import com.geniex.demo.utils.HfQuant
+import com.geniex.demo.utils.HfSettings
 import com.geniex.demo.utils.ImgUtil
 import com.geniex.demo.utils.CustomModelStore
 import com.geniex.demo.utils.HuggingFaceApi
@@ -73,14 +82,17 @@ import com.geniex.sdk.bean.VlmChatMessage
 import com.geniex.sdk.bean.VlmContent
 import com.geniex.sdk.bean.VlmCreateInput
 import com.gyf.immersionbar.ktx.immersionBar
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.FileOutputStream
+import java.io.IOException
 import java.util.Locale
 
 class MainActivity : FragmentActivity() {
@@ -99,6 +111,7 @@ class MainActivity : FragmentActivity() {
     private lateinit var btnImportModel: Button
     private lateinit var btnDeleteCustom: Button
     private lateinit var customModelStore: CustomModelStore
+    private lateinit var hfLocalStore: HfLocalStore
     private lateinit var etInput: EditText
     private lateinit var btnSend: Button
     private lateinit var btnClearHistory: Button
@@ -255,6 +268,8 @@ class MainActivity : FragmentActivity() {
      */
     private fun initData() {
         customModelStore = CustomModelStore(this)
+        hfLocalStore = HfLocalStore(this)
+        HfSettings.init(this)
         parseModelList()
         // Merge user-added models (HF search + local import) after the
         // built-in catalog so they appear at the bottom of the spinner.
@@ -262,8 +277,22 @@ class MainActivity : FragmentActivity() {
         if (custom.isNotEmpty()) {
             modelList = modelList + custom
         }
+        // Point models the app already downloaded at their local file.
+        modelList = applyLocalPaths(modelList)
+        hfScope.launch { hfLocalStore.gc(HfLocalStore.rootDir(this@MainActivity)) }
         initGenieXSdk()
     }
+
+    /**
+     * Overlays [HfLocalStore] onto the catalog: a model this app downloaded
+     * itself is loaded straight from that file instead of being pulled
+     * again through the Rust model manager.
+     */
+    private fun applyLocalPaths(models: List<ModelData>): List<ModelData> =
+        models.map { model ->
+            val entry = hfLocalStore.get(model.id) ?: return@map model
+            model.copy(localPath = entry.modelPath, mmprojPath = entry.mmprojPath)
+        }
 
     /**
      * Step 1. initGenieXSdk environment
@@ -335,7 +364,10 @@ class MainActivity : FragmentActivity() {
      * null while the pull is still in `.inflight/`.
      */
     private suspend fun isModelDownloaded(modelData: ModelData): Boolean {
-        // Locally imported models are always "available" — the file is on disk.
+        // Models this app downloaded itself (or the user imported) live at
+        // paths we own — no need to ask the Rust manager about them.
+        val entry = hfLocalStore.get(modelData.id)
+        if (entry != null) return entry.isComplete()
         if (!modelData.localPath.isNullOrEmpty()) {
             return File(modelData.localPath).exists()
         }
@@ -350,14 +382,21 @@ class MainActivity : FragmentActivity() {
     ) {
         modelScope.launch {
             resetLoadState()
-            // Locally imported GGUF: bypass the model manager and construct
-            // the input directly. The file is already on disk and needs no
-            // pull. GGUF embeds its tokenizer, so tokenizer_path stays empty.
-            val localFile = selectModelData.localPath
+            // Locally available GGUF (imported, or downloaded by this app
+            // from Hugging Face): bypass the model manager and construct the
+            // input directly. The file is already on disk and needs no pull.
+            // GGUF embeds its tokenizer, so tokenizer_path stays empty.
+            val localEntry = hfLocalStore.get(selectModelData.id)
+            val localFile = localEntry?.modelPath ?: selectModelData.localPath
+            val localMmproj = localEntry?.mmprojPath ?: selectModelData.mmprojPath
             if (!localFile.isNullOrEmpty()) {
                 val file = File(localFile)
                 if (!file.exists()) {
                     onLoadModelFailed("local model file not found: ${file.name}")
+                    return@launch
+                }
+                if (selectModelData.isVision() || !localMmproj.isNullOrEmpty()) {
+                    loadLocalVlm(selectModelData, file, localMmproj, nGpuLayers, deviceId)
                     return@launch
                 }
                 val conf = ModelConfig(
@@ -496,6 +535,70 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    /**
+     * Loads a multimodal GGUF that is already on disk.
+     *
+     * Mirrors the managed VLM branch of [loadModel]: the image geometry is
+     * read from the projector itself, and nCtx is grown so one image, its
+     * answer and a follow-up turn all fit in the context window.
+     */
+    private fun loadLocalVlm(
+        modelData: ModelData,
+        weights: File,
+        mmproj: String?,
+        nGpuLayers: Int,
+        deviceId: String?,
+    ) {
+        val projector = mmproj?.let { File(it) }
+        if (projector == null || !projector.exists()) {
+            onLoadModelFailed("${weights.name} is multimodal but its mmproj is missing — download it again")
+            return
+        }
+        vlmVisionConfig = runCatching { GgufVisionReader.read(projector) }.getOrNull()
+        vlmVisionConfig?.let {
+            Log.d(
+                TAG,
+                "local vision tower: ${it.imageSize}px, patch ${it.patchSize} -> ${it.tokenCount} tokens",
+            )
+        } ?: Log.w(TAG, "no vision config from mmproj; preprocessing at $FALLBACK_VLM_IMAGE_SIZE")
+        VlmWrapper
+            .builder()
+            .vlmCreateInput(
+                VlmCreateInput(
+                    model_name = modelData.modelName,
+                    model_path = weights.absolutePath,
+                    mmproj_path = projector.absolutePath,
+                    config =
+                        ModelConfig(
+                            nCtx = vlmContextSize(vlmVisionConfig),
+                            nThreads = 4,
+                            nBatch = 1,
+                            nUBatch = 1,
+                            nGpuLayers = nGpuLayers,
+                            enable_thinking = enableThinking,
+                        ),
+                    runtime_id = "llama_cpp",
+                    compute_unit = deviceId ?: "HTP0",
+                ),
+            ).build()
+            .onSuccess { wrapper ->
+                isLoadVlmModel = true
+                vlmWrapper = wrapper
+                onLoadModelSuccess("local vlm loaded: ${weights.name}")
+            }.onFailure { error ->
+                onLoadModelFailed(error.message.toString())
+            }
+    }
+
+    /**
+     * Step 3. download model.
+     *
+     * Hugging Face entries ([ModelData.isSelfDownloaded]) are downloaded by
+     * the app itself over HTTPS — exact file, pinned revision, resumable —
+     * so they no longer depend on the Rust model manager knowing how to
+     * resolve the repo. Everything else (AI Hub / QAIRT bundles) still goes
+     * through [downloadFromModelManager].
+     */
     private fun downloadModel(selectModelData: ModelData) {
         if (hasLoadedModel()) {
             Toast.makeText(this@MainActivity, "unload the current model first", Toast.LENGTH_SHORT).show()
@@ -511,6 +614,15 @@ class MainActivity : FragmentActivity() {
             return
         }
 
+        if (selectModelData.isSelfDownloaded()) {
+            downloadFromHuggingFace(selectModelData)
+        } else {
+            downloadFromModelManager(selectModelData)
+        }
+    }
+
+    /** Legacy path: hand the pull to the Rust model manager. */
+    private fun downloadFromModelManager(selectModelData: ModelData) {
         downloadingModelData = selectModelData
         llDownloading.visibility = View.VISIBLE
         tvDownloadProgress.text = "0%"
@@ -600,6 +712,182 @@ class MainActivity : FragmentActivity() {
                     if (wakeLock.isHeld) wakeLock.release()
                 }
             }
+    }
+
+    // ------------------------------------------------------------------
+    // Self-managed Hugging Face downloads
+    // ------------------------------------------------------------------
+
+    /**
+     * Downloads a GGUF straight from Hugging Face into app-private storage.
+     *
+     * Compared with the model-manager pull this path:
+     *  - downloads the **exact** file that was chosen (the manager only
+     *    receives a repo plus a quant hint and has to guess), which is what
+     *    makes user-added repos work at all;
+     *  - pins the revision, so a resumed byte range can never splice bytes
+     *    from two different commits;
+     *  - reports bytes, throughput and ETA rather than a bare percentage;
+     *  - keeps the partial file on cancel, so Retry resumes;
+     *  - falls back to the mirror host when the official one is unreachable.
+     */
+    private fun downloadFromHuggingFace(selectModelData: ModelData) {
+        // Already on disk from an earlier run — nothing to fetch. The
+        // downloader would short-circuit too, but this way the user gets
+        // told instead of watching an overlay that closes instantly.
+        if (hfLocalStore.get(selectModelData.id)?.isComplete() == true) {
+            Toast.makeText(this@MainActivity, "model already downloaded", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        downloadingModelData = selectModelData
+        llDownloading.visibility = View.VISIBLE
+        tvDownloadProgress.text = "0%"
+
+        val wakeLock =
+            (getSystemService(Context.POWER_SERVICE) as PowerManager)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "geniex:hf_download")
+        runCatching { wakeLock.acquire(60 * 60 * 1000L) }
+
+        downloadJob =
+            modelScope.launch {
+                try {
+                    val revision = HfSettings.revision
+                    val repo = selectModelData.hfRepoOrName()
+                    if (repo.isBlank() || repo.startsWith("local/", ignoreCase = true)) {
+                        throw IllegalArgumentException("${selectModelData.displayName} has no Hugging Face repo")
+                    }
+
+                    // 1. Resolve the exact file inside the repo. The catalog
+                    //    only names a repo and a quant, so the file to fetch
+                    //    is picked from the tree unless it was pinned.
+                    val allFiles = HuggingFaceApi.listFiles(repo, revision).getOrThrow()
+                    val candidates = allFiles.filter { it.isGguf() && !it.isMmproj() }
+                    if (candidates.isEmpty()) throw IOException("no .gguf file in $repo")
+                    val target =
+                        selectModelData.hfFile?.takeIf { it.isNotBlank() }?.let { wanted ->
+                            candidates.firstOrNull { it.path == wanted }
+                                ?: throw IOException("$wanted no longer exists in $repo@$revision")
+                        } ?: HfQuant.pickFile(candidates, selectModelData.quant)!!
+
+                    // 2. Multimodal models need the vision projector too.
+                    val mmproj =
+                        if (selectModelData.isVision()) {
+                            val projectors = allFiles.filter { it.isMmproj() }
+                            selectModelData.mmprojFile?.takeIf { it.isNotBlank() }?.let { wanted ->
+                                projectors.firstOrNull { it.path == wanted }
+                            } ?: projectors.minByOrNull { it.effectiveSize }
+                        } else {
+                            null
+                        }
+
+                    val weightsDest =
+                        HfLocalStore.destination(this@MainActivity, repo, revision, target.path)
+                    val mmprojDest =
+                        mmproj?.let {
+                            HfLocalStore.destination(this@MainActivity, repo, revision, it.path)
+                        }
+
+                    // 3. Fetch the bytes. Both files report into the same view.
+                    HfDownloader.downloadWithFallback(
+                        urls = HuggingFaceApi.downloadUrls(repo, target.path, revision),
+                        dest = weightsDest,
+                        token = HfSettings.token.ifBlank { null },
+                        expectedBytes = target.effectiveSize.takeIf { it > 0 },
+                    ) { progress ->
+                        publishProgress(progress, target.path.substringAfterLast('/'))
+                        true
+                    }
+
+                    if (mmproj != null && mmprojDest != null) {
+                        HfDownloader.downloadWithFallback(
+                            urls = HuggingFaceApi.downloadUrls(repo, mmproj.path, revision),
+                            dest = mmprojDest,
+                            token = HfSettings.token.ifBlank { null },
+                            expectedBytes = mmproj.effectiveSize.takeIf { it > 0 },
+                        ) { progress ->
+                            publishProgress(progress, "mmproj")
+                            true
+                        }
+                    }
+
+                    hfLocalStore.put(
+                        selectModelData.id,
+                        HfLocalEntry(
+                            modelPath = weightsDest.absolutePath,
+                            mmprojPath = mmprojDest?.absolutePath,
+                            repo = repo,
+                            file = target.path,
+                            mmprojFile = mmproj?.path,
+                            revision = revision,
+                            sizeBytes = weightsDest.length(),
+                        ),
+                    )
+                    withContext(Dispatchers.Main) {
+                        llDownloading.visibility = View.GONE
+                        refreshModelSpinner()
+                        selectModelById(selectModelData.id)
+                        Toast
+                            .makeText(
+                                this@MainActivity,
+                                "${selectModelData.displayName} downloaded",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                    }
+                } catch (e: CancellationException) {
+                    Log.d(TAG, "hf download cancelled: ${e.message}")
+                    withContext(Dispatchers.Main) {
+                        llDownloading.visibility = View.GONE
+                        tvDownloadProgress.text = "0%"
+                        Toast
+                            .makeText(
+                                this@MainActivity,
+                                "Download stopped — Retry resumes where it left off",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "hf download failed", e)
+                    withContext(Dispatchers.Main) {
+                        llDownloading.visibility = View.GONE
+                        tvDownloadProgress.text = "0%"
+                        Toast
+                            .makeText(
+                                this@MainActivity,
+                                "Download failed: ${e.message}",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                    }
+                } finally {
+                    if (wakeLock.isHeld) runCatching { wakeLock.release() }
+                    downloadingModelData = null
+                }
+            }
+    }
+
+    /** Renders one download snapshot into the overlay. */
+    private suspend fun publishProgress(
+        progress: HfDownloader.Progress,
+        label: String,
+    ) {
+        withContext(Dispatchers.Main.immediate) {
+            val percent = if (progress.percent >= 0) "${progress.percent}%  " else ""
+            val done = formatMegabytes(progress.downloadedBytes)
+            val total = if (progress.totalBytes > 0) formatMegabytes(progress.totalBytes) else "?"
+            val speed =
+                if (progress.bytesPerSecond > 0) {
+                    "   ${formatMegabytes(progress.bytesPerSecond)} MB/s"
+                } else {
+                    ""
+                }
+            val eta =
+                if (progress.etaSeconds >= 0) {
+                    "   ${formatDuration(progress.etaSeconds)} left"
+                } else {
+                    ""
+                }
+            tvDownloadProgress.text = "$percent$done / $total MB$speed$eta\n$label"
+        }
     }
 
     private fun setListeners() {
@@ -1327,7 +1615,14 @@ class MainActivity : FragmentActivity() {
 
     private val hfScope = CoroutineScope(Dispatchers.IO)
 
-    /** Show the Hugging Face model search & add dialog. */
+    /**
+     * Show the Hugging Face model search & add dialog.
+     *
+     * The dialog picks the *exact* files to download: the weights file, an
+     * optional `mmproj` projector for multimodal repos, plus the endpoint
+     * and token used to reach them. Everything is then stored on the
+     * [ModelData] so the download no longer has to guess.
+     */
     private fun showHfSearchDialog() {
         val dialogView = layoutInflater.inflate(R.layout.dialog_hf_search, null)
         val etSearch = dialogView.findViewById<EditText>(R.id.et_hf_search)
@@ -1337,57 +1632,99 @@ class MainActivity : FragmentActivity() {
         val llFilePicker = dialogView.findViewById<LinearLayout>(R.id.ll_hf_file_picker)
         val tvSelectedRepo = dialogView.findViewById<TextView>(R.id.tv_hf_selected_repo)
         val spFiles = dialogView.findViewById<Spinner>(R.id.sp_hf_files)
+        val spMmproj = dialogView.findViewById<Spinner>(R.id.sp_hf_mmproj)
         val btnAdd = dialogView.findViewById<Button>(R.id.btn_hf_add_model)
         val btnBack = dialogView.findViewById<Button>(R.id.btn_hf_back)
+        val cbMirror = dialogView.findViewById<CheckBox>(R.id.cb_hf_mirror)
+        val etToken = dialogView.findViewById<EditText>(R.id.et_hf_token)
 
         rvResults.layoutManager = androidx.recyclerview.widget.LinearLayoutManager(this)
         var selectedRepoId = ""
         var ggufFiles = listOf<HuggingFaceApi.HfFile>()
+        var mmprojFiles = listOf<HuggingFaceApi.HfFile>()
 
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Hugging Face Model Search")
-            .setView(dialogView)
-            .setNegativeButton("Close", null)
-            .create()
+        cbMirror.isChecked = HfSettings.useMirror
+        etToken.setText(HfSettings.token)
+
+        val dialog =
+            AlertDialog.Builder(this)
+                .setTitle("Hugging Face Model Search")
+                .setView(dialogView)
+                .setNegativeButton("Close", null)
+                .create()
 
         fun runSearch(query: String) {
             tvStatus.text = "Searching..."
             hfScope.launch {
-                val results = HuggingFaceApi.searchModels(query)
+                val result = HuggingFaceApi.searchModels(query)
                 runOnUiThread {
-                    if (results.isEmpty()) {
-                        tvStatus.text = "No GGUF models found for '$query'"
-                        rvResults.adapter = null
-                    } else {
-                        tvStatus.text = "${results.size} models found (tap to select)"
-                        rvResults.adapter = HfModelAdapter(results) { model ->
-                            selectedRepoId = model.id
-                            tvSelectedRepo.text = "Repo: ${model.id}"
-                            tvStatus.text = "Loading file list..."
-                            llFilePicker.visibility = View.VISIBLE
-                            hfScope.launch {
-                                ggufFiles = HuggingFaceApi.listGgufFiles(model.id)
-                                runOnUiThread {
-                                    if (ggufFiles.isEmpty()) {
-                                        tvStatus.text = "No .gguf files found in this repo"
-                                        btnAdd.isEnabled = false
-                                    } else {
-                                        tvStatus.text = "${ggufFiles.size} GGUF files — pick one"
-                                        btnAdd.isEnabled = true
-                                        val labels = ggufFiles.map { f ->
-                                            val mb = f.size / (1024 * 1024)
-                                            "${f.path}  (${mb} MB)"
+                    result
+                        .onSuccess { results ->
+                            if (results.isEmpty()) {
+                                tvStatus.text = "No GGUF models found for '$query'"
+                                rvResults.adapter = null
+                            } else {
+                                tvStatus.text = "${results.size} models found (tap to select)"
+                                rvResults.adapter =
+                                    HfModelAdapter(results) { model ->
+                                        selectedRepoId = model.id
+                                        tvSelectedRepo.text = "Repo: ${model.id}"
+                                        tvStatus.text = "Loading file list..."
+                                        llFilePicker.visibility = View.VISIBLE
+                                        hfScope.launch {
+                                            val files = HuggingFaceApi.listFiles(model.id)
+                                            runOnUiThread {
+                                                files
+                                                    .onSuccess { all ->
+                                                        ggufFiles =
+                                                            all.filter { it.isGguf() && !it.isMmproj() }
+                                                                .sortedBy { it.effectiveSize }
+                                                        mmprojFiles =
+                                                            all.filter { it.isMmproj() }
+                                                                .sortedBy { it.effectiveSize }
+                                                        if (ggufFiles.isEmpty()) {
+                                                            tvStatus.text = "No .gguf files found in this repo"
+                                                            btnAdd.isEnabled = false
+                                                        } else {
+                                                            val projectorCount =
+                                                                mmprojFiles.size.takeIf { it > 0 }
+                                                                    ?.let { ", $it projector(s)" } ?: ""
+                                                            tvStatus.text =
+                                                                "${ggufFiles.size} GGUF file(s)$projectorCount — pick one"
+                                                            btnAdd.isEnabled = true
+                                                            spFiles.adapter =
+                                                                android.widget.ArrayAdapter(
+                                                                    this@MainActivity,
+                                                                    android.R.layout.simple_spinner_dropdown_item,
+                                                                    ggufFiles.map { it.describe() },
+                                                                )
+                                                            spMmproj.adapter =
+                                                                android.widget.ArrayAdapter(
+                                                                    this@MainActivity,
+                                                                    android.R.layout.simple_spinner_dropdown_item,
+                                                                    listOf("None — text only") +
+                                                                        mmprojFiles.map { it.describe() },
+                                                                )
+                                                            // A repo that ships a projector is a
+                                                            // vision model — default to using it,
+                                                            // otherwise the model silently loses
+                                                            // the ability to read images.
+                                                            if (mmprojFiles.isNotEmpty()) {
+                                                                spMmproj.setSelection(1)
+                                                            }
+                                                        }
+                                                    }.onFailure { error ->
+                                                        tvStatus.text = "Could not list files: ${error.message}"
+                                                        btnAdd.isEnabled = false
+                                                    }
+                                            }
                                         }
-                                        spFiles.adapter = android.widget.ArrayAdapter(
-                                            this@MainActivity,
-                                            android.R.layout.simple_spinner_dropdown_item,
-                                            labels,
-                                        )
                                     }
-                                }
                             }
+                        }.onFailure { error ->
+                            tvStatus.text = "Search failed: ${error.message}"
+                            rvResults.adapter = null
                         }
-                    }
                 }
             }
         }
@@ -1406,27 +1743,37 @@ class MainActivity : FragmentActivity() {
         }
         btnAdd.setOnClickListener {
             if (selectedRepoId.isEmpty() || ggufFiles.isEmpty()) return@setOnClickListener
-            val file = ggufFiles[spFiles.selectedItemPosition]
+            val file = ggufFiles[spFiles.selectedItemPosition.coerceIn(0, ggufFiles.lastIndex)]
+            // Index 0 is the "None — text only" placeholder.
+            val mmproj = mmprojFiles.getOrNull(spMmproj.selectedItemPosition - 1)
             val quant = extractQuantFromFilename(file.path)
-            val modelId = "hf_${selectedRepoId.replace("/", "_")}_$quant"
-            val displayName = "${selectedRepoId.substringAfter('/')} ($quant)"
-            val newModel = ModelData(
-                id = modelId,
-                displayName = displayName,
-                modelName = selectedRepoId,
-                type = "chat",
-                runtime = "llama_cpp",
-                quant = quant,
-                hub = "HUGGINGFACE",
-                isCustom = true,
-            )
+            val shortName = file.path.substringAfterLast('/').substringBeforeLast('.')
+            val modelId = "hf_${selectedRepoId.replace('/', '_')}_$shortName"
+                .replace(Regex("[^A-Za-z0-9._-]"), "_")
+            val displayName = "${selectedRepoId.substringAfter('/')} · $shortName"
+            val newModel =
+                ModelData(
+                    id = modelId,
+                    displayName = displayName,
+                    modelName = selectedRepoId,
+                    type = if (mmproj != null) "vlm" else "chat",
+                    runtime = "llama_cpp",
+                    quant = quant,
+                    hub = "HUGGINGFACE",
+                    isCustom = true,
+                    hfRepo = selectedRepoId,
+                    hfFile = file.path,
+                    mmprojFile = mmproj?.path,
+                )
+            // Save the transport settings before the download starts, not
+            // after — a token typo should fail fast, not mid-download.
+            HfSettings.setUseMirror(this@MainActivity, cbMirror.isChecked)
+            HfSettings.setToken(this@MainActivity, etToken.text.toString())
             customModelStore.add(newModel)
             refreshModelSpinner()
             dialog.dismiss()
             // Auto-select and start download for convenience.
-            selectModelId = modelId
-            val pos = modelList.indexOfFirst { it.id == modelId }
-            if (pos >= 0) spModelList.setSelection(pos)
+            selectModelById(modelId)
             downloadModel(newModel)
             Toast.makeText(this, "Added & downloading: $displayName", Toast.LENGTH_SHORT).show()
         }
@@ -1434,16 +1781,13 @@ class MainActivity : FragmentActivity() {
         dialog.show()
     }
 
+    private fun HuggingFaceApi.HfFile.describe(): String =
+        "${path.substringAfterLast('/')}  (${formatMegabytes(effectiveSize)} MB)"
+
     /** Extract a quantization label (e.g. Q4_0, Q5_K_M) from a GGUF filename. */
-    private fun extractQuantFromFilename(filename: String): String {
-        val upper = filename.uppercase()
-        val patterns = listOf("Q8_0", "Q6_K", "Q5_K_M", "Q5_K_S", "Q5_0", "Q4_K_M", "Q4_K_S", "Q4_0", "Q3_K_M", "Q3_K_S", "Q2_K", "F16", "F32")
-        for (p in patterns) {
-            if (upper.contains(p)) return p
-        }
-        // Fallback: use the filename without extension as quant label.
-        return filename.substringAfterLast('/').substringBeforeLast('.').takeLast(20)
-    }
+    private fun extractQuantFromFilename(filename: String): String =
+        HfQuant.from(filename)
+            ?: filename.substringAfterLast('/').substringBeforeLast('.').takeLast(20)
 
     /** Open the Storage Access Framework file picker for .gguf import. */
     private fun openLocalModelPicker() {
@@ -1525,7 +1869,10 @@ class MainActivity : FragmentActivity() {
                     Toast.makeText(this, "Unload the model first", Toast.LENGTH_SHORT).show()
                     return@setItems
                 }
-                // Delete local file if present
+                // Delete downloaded weights (and the projector) with it —
+                // a few GB per model is not worth keeping around.
+                hfLocalStore.remove(target.id)
+                // Imported files were never registered in the store.
                 target.localPath?.let { path ->
                     runCatching { File(path).delete() }
                 }
@@ -1542,6 +1889,7 @@ class MainActivity : FragmentActivity() {
         parseModelList()
         val custom = customModelStore.load()
         modelList = if (custom.isNotEmpty()) modelList + custom else modelList
+        modelList = applyLocalPaths(modelList)
         spModelList.adapter =
             object : SimpleAdapter(
                 this,
@@ -1564,6 +1912,15 @@ class MainActivity : FragmentActivity() {
                 }
                 override fun onNothingSelected(parent: AdapterView<*>?) { selectModelId = "" }
             }
+    }
+
+    /** Selects a model in the spinner without waiting for a user click. */
+    private fun selectModelById(modelId: String) {
+        val pos = modelList.indexOfFirst { it.id == modelId }
+        if (pos >= 0) {
+            spModelList.setSelection(pos)
+            selectModelId = modelId
+        }
     }
 
     companion object {
@@ -1595,5 +1952,15 @@ class MainActivity : FragmentActivity() {
             while (ctx < needed) ctx *= 2
             return ctx
         }
+
+        private fun formatMegabytes(bytes: Long): String =
+            String.format(Locale.US, "%.1f", bytes / 1048576.0)
+
+        private fun formatDuration(seconds: Long): String =
+            when {
+                seconds < 60 -> "${seconds}s"
+                seconds < 3600 -> "${seconds / 60}m ${seconds % 60}s"
+                else -> "${seconds / 3600}h ${(seconds % 3600) / 60}m"
+            }
     }
 }

@@ -70,6 +70,48 @@ sync — no separate SDK download is required.
 2. Launch the app from the device's launcher. Models are downloaded on first
    use; pick one from the in-app catalog.
 
+## Downloading Models from Hugging Face
+
+The app fetches GGUF weights from Hugging Face itself, over plain HTTPS — no
+AI Hub account, token, or CLI step involved.
+
+### Adding a model from the app
+
+1. Tap **HF Search** and search for a model (`qwen`, `llama`, `gemma`, ...).
+   Only repos tagged `gguf` are listed.
+2. Tap a repo. The app lists its `.gguf` files with their real sizes.
+3. Pick the weights file. If the repo ships a `mmproj` projector, the
+   **Vision projector** spinner defaults to it and the model is registered
+   as a VLM — picking `None` gives you the text-only path.
+4. Tap **Add & Download**. The overlay shows percentage, bytes
+   downloaded, throughput and ETA.
+
+Downloaded models live in `<filesDir>/hf_models/<org>_<repo>/<revision>/`
+and are registered the moment the last byte lands, so they show up in the
+model spinner immediately and survive app restarts.
+
+### Behaviour worth knowing
+
+| Situation | What happens |
+| -- | -- |
+| Download cancelled or connection dropped | The `.part` file is kept; **Retry** resumes from the last byte instead of restarting. |
+| Repo file changed upstream | Sizes are checked against the repo tree; a mismatch fails loudly rather than loading a corrupt model. |
+| Gated / private repo | Enter a Hugging Face access token in the dialog — it is sent as `Authorization: Bearer …`. |
+| `huggingface.co` unreachable | With **Use hf-mirror.com** checked, the app falls back to the mirror host. Both hosts serve identical bytes, so a resumed download can switch host mid-file. |
+| Multimodal repo | Weights *and* `mmproj` are downloaded; image size is read from the projector at load time. |
+
+### Catalog entries
+
+Models in `src/main/assets/model_list.json` with `"hub": "HUGGINGFACE"` also
+go through this path. The catalog names a repo and a quantization but not a
+file, so the app lists the repo and picks the smallest file matching that
+quantization (`Q4_K_M`, `Q5_K_M`, ...). Add an explicit `hfFile` (and
+`mmprojFile` for VLMs) to pin an exact file.
+
+QAIRT / AI Hub entries (`"hub": "AUTO"` with an `ai-hub-models/*` name) are
+still pulled by the GenieX model manager — those bundles are chipset-specific
+and cannot be downloaded from Hugging Face as-is.
+
 ## Supported Hardware
 
 - **NPU**: Qualcomm® Snapdragon® 8 Elite, Snapdragon® 8 Elite Gen 5

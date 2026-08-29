@@ -59,7 +59,38 @@ data class ModelData(
      * input directly — the model is already on disk and needs no pull.
      */
     val localPath: String? = null,
+    /**
+     * Hugging Face repo id (`org/repo`) for models this app downloads
+     * itself. Falls back to [modelName], which is already the repo id for
+     * every `hub: HUGGINGFACE` entry in `model_list.json`.
+     */
+    val hfRepo: String? = null,
+    /**
+     * Exact file inside [hfRepo] to download, e.g. `Qwen3-0.6B-Q4_K_M.gguf`.
+     * When null the app resolves one from the repo tree using [quant].
+     */
+    val hfFile: String? = null,
+    /**
+     * `mmproj` projector to download next to [hfFile]. Only meaningful for
+     * `type == "vlm"`; when null and the model is multimodal, the app picks
+     * the smallest `mmproj` found in the repo.
+     */
+    val mmprojFile: String? = null,
+    /** Absolute path of the downloaded projector, filled in at runtime. */
+    val mmprojPath: String? = null,
 )
+
+/**
+ * True when the app should download this model from Hugging Face itself
+ * rather than handing the pull to the Rust model manager.
+ */
+fun ModelData.isSelfDownloaded(): Boolean = hub.equals("HUGGINGFACE", ignoreCase = true)
+
+/** Resolved Hugging Face repo id, falling back to the model name. */
+fun ModelData.hfRepoOrName(): String = hfRepo?.takeIf { it.isNotBlank() } ?: modelName
+
+/** "vlm" and "multimodal" both mean a vision-language model here. */
+fun ModelData.isVision(): Boolean = type == "vlm" || type == "multimodal"
 
 /**
  * Compute units offered in the picker dialog for this model. QAIRT is

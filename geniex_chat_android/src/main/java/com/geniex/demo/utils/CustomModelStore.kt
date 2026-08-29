@@ -7,9 +7,9 @@ package com.geniex.demo.utils
 import android.content.Context
 import android.util.Log
 import com.geniex.demo.bean.ModelData
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.decodeFromString
-import kotlinx.serialization.json.encodeToString
 
 /**
  * Persists user-added models (HF search results and locally imported
