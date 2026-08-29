@@ -65,3 +65,46 @@ jobs:
         with:
           name: my-genie-apk
           path: geniex_chat_android/build/outputs/apk/debug/app-debug.apk
+
+  # Artifacts require a GitHub login and expire after 90 days, so the APK is
+  # also published as a release asset — that gives a public, login-free
+  # download link that does not rot.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: my-genie-apk
+          path: apk
+
+      - name: Rename APK with build number
+        run: |
+          mkdir -p dist
+          mv apk/app-debug.apk "dist/geniex-chat-v1.0.${GITHUB_RUN_NUMBER}.apk"
+          ls -lh dist
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v1.0.${GITHUB_RUN_NUMBER}"
+          # A re-run reuses its run number, so drop a stale release first
+          # instead of failing on "tag already exists".
+          gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$tag" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "GenieX Chat v1.0.${GITHUB_RUN_NUMBER}" \
+            --generate-notes \
+            --latest \
+            dist/*.apk
+          echo "published $tag"
