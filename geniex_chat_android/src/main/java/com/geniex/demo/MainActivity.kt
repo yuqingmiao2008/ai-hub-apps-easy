@@ -542,7 +542,7 @@ class MainActivity : FragmentActivity() {
      * read from the projector itself, and nCtx is grown so one image, its
      * answer and a follow-up turn all fit in the context window.
      */
-    private fun loadLocalVlm(
+    private suspend fun loadLocalVlm(
         modelData: ModelData,
         weights: File,
         mmproj: String?,
