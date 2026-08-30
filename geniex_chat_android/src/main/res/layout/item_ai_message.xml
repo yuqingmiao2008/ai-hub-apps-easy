@@ -13,7 +13,7 @@
         android:letterSpacing="0.02"
         android:maxWidth="320dp"
         android:text="Hello, I am Assistant"
-        android:textColor="#1F1F1F"
+        android:textColor="@color/font_primary"
         android:textSize="16sp"
         android:textIsSelectable="true"
         android:linksClickable="true" />

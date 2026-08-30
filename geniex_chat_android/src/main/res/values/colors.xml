@@ -9,4 +9,30 @@
     <color name="white">#FFFFFFFF</color>
     <color name="bg_normal">#F6F7F9</color>
     <color name="font_black">#1F1F1F</color>
+    <color name="font_gray">#888888</color>
+
+    <!-- Semantic palette. Every layout and drawable should reference these
+         instead of a literal, so the night variant can override them. -->
+
+    <!-- Base surfaces, light theme. -->
+    <color name="background">#FFFFFF</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="surface_variant">#FCFCFC</color>
+    <color name="surface_tint">#DBEAEB</color>
+
+    <!-- Text. -->
+    <color name="font_primary">#1F1F1F</color>
+    <color name="font_secondary">#454545</color>
+    <color name="font_tertiary">#888888</color>
+    <color name="font_hint">#ADADAD</color>
+
+    <!-- Lines and shapes. -->
+    <color name="divider">#E7E7E7</color>
+    <color name="stroke">#454545</color>
+    <color name="scrim">#44000000</color>
+
+    <!-- Primary action button. Kept high-contrast against the surface in
+         both themes rather than tracking the text colour. -->
+    <color name="button_bg">#454545</color>
+    <color name="button_fg">#FFFFFF</color>
 </resources>

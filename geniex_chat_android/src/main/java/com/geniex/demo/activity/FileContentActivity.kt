@@ -4,10 +4,12 @@
 // ---------------------------------------------------------------------
 package com.geniex.demo.activity
 
-import android.app.Activity
-import android.graphics.Color
 import android.os.Bundle
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import com.geniex.demo.R
 import com.geniex.demo.databinding.ActivityFileContentBinding
+import com.geniex.demo.utils.ThemeSettings
 import com.geniex.demo.utils.inflate
 import com.gyf.immersionbar.ktx.immersionBar
 import kotlinx.coroutines.CoroutineScope
@@ -15,7 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.io.File
 
-class FileContentActivity : Activity() {
+class FileContentActivity : AppCompatActivity() {
     private val binding by inflate<ActivityFileContentBinding>()
     private var filePath: String? = null
     private var promptContent: String? = null
@@ -23,8 +25,8 @@ class FileContentActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         immersionBar {
-            statusBarColorInt(Color.WHITE)
-            statusBarDarkFont(true)
+            statusBarColorInt(ContextCompat.getColor(this@FileContentActivity, R.color.background))
+            statusBarDarkFont(!ThemeSettings.isNight(this@FileContentActivity))
             fitsSystemWindows(true)
         }
         filePath = intent.getStringExtra(KEY_FILE_PATH)

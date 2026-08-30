@@ -13,7 +13,7 @@
         android:padding="15dp"
         android:textSize="14sp"
         android:letterSpacing="0.01"
-        android:textColor="#1F1F1F"
+        android:textColor="@color/font_primary"
         tools:text="test" />
 
 </LinearLayout>

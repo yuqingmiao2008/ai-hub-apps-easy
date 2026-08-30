@@ -13,7 +13,6 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.net.Uri
@@ -40,11 +39,11 @@ import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.widget.doAfterTextChanged
-import androidx.fragment.app.FragmentActivity
 import androidx.recyclerview.widget.RecyclerView
 import com.geniex.demo.bean.ModelData
 import com.geniex.demo.bean.getSupportPluginIds
@@ -63,6 +62,7 @@ import com.geniex.demo.utils.HfLocalEntry
 import com.geniex.demo.utils.HfLocalStore
 import com.geniex.demo.utils.HfQuant
 import com.geniex.demo.utils.HfSettings
+import com.geniex.demo.utils.ThemeSettings
 import com.geniex.demo.utils.ImgUtil
 import com.geniex.demo.utils.CustomModelStore
 import com.geniex.demo.utils.HuggingFaceApi
@@ -95,7 +95,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.util.Locale
 
-class MainActivity : FragmentActivity() {
+class MainActivity : AppCompatActivity() {
     private val binding: ActivityMainBinding by inflate()
     private var downloadJob: Job? = null
     private var downloadingModelData: ModelData? = null
@@ -110,6 +110,7 @@ class MainActivity : FragmentActivity() {
     private lateinit var btnHfSearch: Button
     private lateinit var btnImportModel: Button
     private lateinit var btnDeleteCustom: Button
+    private lateinit var btnTheme: Button
     private lateinit var customModelStore: CustomModelStore
     private lateinit var hfLocalStore: HfLocalStore
     private lateinit var etInput: EditText
@@ -154,8 +155,10 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         immersionBar {
-            statusBarColorInt(Color.WHITE)
-            statusBarDarkFont(true)
+            // Follow the resolved palette instead of hard-coding white —
+            // a white status bar on the black theme is jarring.
+            statusBarColorInt(ContextCompat.getColor(this@MainActivity, R.color.background))
+            statusBarDarkFont(!ThemeSettings.isNight(this@MainActivity))
         }
         initData()
         initView()
@@ -216,6 +219,8 @@ class MainActivity : FragmentActivity() {
         btnHfSearch = findViewById(R.id.btn_hf_search)
         btnImportModel = findViewById(R.id.btn_import_model)
         btnDeleteCustom = findViewById(R.id.btn_delete_custom)
+        btnTheme = findViewById(R.id.btn_theme)
+        updateThemeButtonLabel()
         etInput = findViewById(R.id.et_input)
         btnAddImage = findViewById(R.id.btn_add_image)
 
@@ -625,7 +630,7 @@ class MainActivity : FragmentActivity() {
     private fun downloadFromModelManager(selectModelData: ModelData) {
         downloadingModelData = selectModelData
         llDownloading.visibility = View.VISIBLE
-        tvDownloadProgress.text = "0%"
+        resetDownloadOverlay()
 
         val hub =
             runCatching { HubSource.valueOf(selectModelData.hub ?: "AUTO") }
@@ -679,7 +684,20 @@ class MainActivity : FragmentActivity() {
                                 val total = event.files.sumOf { if (it.total_bytes > 0) it.total_bytes else 0L }
                                 val done = event.files.sumOf { it.downloaded_bytes }
                                 val percent = if (total > 0) ((done * 100) / total).toInt() else 0
-                                runOnUiThread { tvDownloadProgress.text = "$percent%" }
+                                runOnUiThread {
+                                    // Same fix as the Hugging Face path: the
+                                    // bar was never driven.
+                                    pbDownloading.isIndeterminate = total <= 0
+                                    if (total > 0) pbDownloading.progress = percent.coerceIn(0, 100)
+                                    tvDownloadProgress.text =
+                                        if (total > 0) {
+                                            "${selectModelData.displayName}\n" +
+                                                "$percent%   ${formatBytes(done)} / ${formatBytes(total)}"
+                                        } else {
+                                            "${selectModelData.displayName}\n" +
+                                                "${formatBytes(done)}   (size unknown)"
+                                        }
+                                }
                             }
 
                             is ModelManagerWrapper.PullEvent.Completed -> {
@@ -742,7 +760,7 @@ class MainActivity : FragmentActivity() {
 
         downloadingModelData = selectModelData
         llDownloading.visibility = View.VISIBLE
-        tvDownloadProgress.text = "0%"
+        resetDownloadOverlay()
 
         val wakeLock =
             (getSystemService(Context.POWER_SERVICE) as PowerManager)
@@ -838,7 +856,7 @@ class MainActivity : FragmentActivity() {
                     Log.d(TAG, "hf download cancelled: ${e.message}")
                     withContext(Dispatchers.Main) {
                         llDownloading.visibility = View.GONE
-                        tvDownloadProgress.text = "0%"
+                        resetDownloadOverlay()
                         Toast
                             .makeText(
                                 this@MainActivity,
@@ -850,7 +868,7 @@ class MainActivity : FragmentActivity() {
                     Log.e(TAG, "hf download failed", e)
                     withContext(Dispatchers.Main) {
                         llDownloading.visibility = View.GONE
-                        tvDownloadProgress.text = "0%"
+                        resetDownloadOverlay()
                         Toast
                             .makeText(
                                 this@MainActivity,
@@ -865,29 +883,69 @@ class MainActivity : FragmentActivity() {
             }
     }
 
-    /** Renders one download snapshot into the overlay. */
+    /**
+     * Renders one download snapshot into the overlay.
+     *
+     * The progress bar used to be bound but never updated, so it sat at its
+     * initial value for the entire download and the only feedback was the
+     * text. The bar is driven here now.
+     */
     private suspend fun publishProgress(
         progress: HfDownloader.Progress,
         label: String,
     ) {
         withContext(Dispatchers.Main.immediate) {
-            val percent = if (progress.percent >= 0) "${progress.percent}%  " else ""
-            val done = formatMegabytes(progress.downloadedBytes)
-            val total = if (progress.totalBytes > 0) formatMegabytes(progress.totalBytes) else "?"
+            val knownTotal = progress.totalBytes > 0
+
+            // With no total there is no honest percentage, so spin instead
+            // of showing a fake 0%.
+            pbDownloading.isIndeterminate = !knownTotal
+            if (knownTotal) pbDownloading.progress = progress.percent.coerceIn(0, 100)
+
+            val sizes =
+                if (knownTotal) {
+                    val pct = progress.percent.coerceIn(0, 100)
+                    "$pct%   ${formatBytes(progress.downloadedBytes)} / ${formatBytes(progress.totalBytes)}"
+                } else {
+                    "${formatBytes(progress.downloadedBytes)}   (size unknown)"
+                }
+
             val speed =
-                if (progress.bytesPerSecond > 0) {
-                    "   ${formatMegabytes(progress.bytesPerSecond)} MB/s"
-                } else {
-                    ""
-                }
+                if (progress.bytesPerSecond > 0) "${formatBytes(progress.bytesPerSecond)}/s" else ""
             val eta =
-                if (progress.etaSeconds >= 0) {
-                    "   ${formatDuration(progress.etaSeconds)} left"
-                } else {
-                    ""
+                if (progress.etaSeconds >= 0) "${formatDuration(progress.etaSeconds)} left" else ""
+
+            val details =
+                when {
+                    speed.isNotEmpty() && eta.isNotEmpty() -> "$speed   $eta"
+                    speed.isNotEmpty() -> speed
+                    else -> ""
                 }
-            tvDownloadProgress.text = "$percent$done / $total MB$speed$eta\n$label"
+
+            tvDownloadProgress.text =
+                if (details.isEmpty()) "$label\n$sizes" else "$label\n$sizes\n$details"
         }
+    }
+
+    /** Reflects the persisted preference, not the currently resolved theme. */
+    private fun updateThemeButtonLabel() {
+        btnTheme.text =
+            when (ThemeSettings.mode) {
+                ThemeSettings.MODE_LIGHT -> "Theme: Light"
+                ThemeSettings.MODE_DARK -> "Theme: Dark"
+                else -> "Theme: Auto"
+            }
+    }
+
+    /**
+     * Puts the overlay back into its pre-download state. The bar is reset as
+     * well — a finished 100% would otherwise sit there until the next
+     * snapshot arrives.
+     */
+    private fun resetDownloadOverlay() {
+        pbDownloading.isIndeterminate = true
+        pbDownloading.progress = 0
+        tvDownloadProgress.text = getString(R.string.download_preparing)
     }
 
     private fun setListeners() {
@@ -907,7 +965,7 @@ class MainActivity : FragmentActivity() {
         binding.btnCancelDownload.setOnClickListener {
             downloadJob?.cancel()
             downloadJob = null
-            tvDownloadProgress.text = "0%"
+            resetDownloadOverlay()
             binding.llDownloading.visibility = View.GONE
         }
         binding.btnRetryDownload.setOnClickListener {
@@ -1170,6 +1228,12 @@ class MainActivity : FragmentActivity() {
         btnHfSearch.setOnClickListener { showHfSearchDialog() }
         btnImportModel.setOnClickListener { openLocalModelPicker() }
         btnDeleteCustom.setOnClickListener { showDeleteCustomDialog() }
+        btnTheme.setOnClickListener {
+            ThemeSettings.setMode(this@MainActivity, ThemeSettings.nextMode())
+            // AppCompatDelegate recreates the activity for us; the label is
+            // refreshed here too so it updates even if recreation is deferred.
+            updateThemeButtonLabel()
+        }
     }
 
     private fun startLoadModel(selectModelData: ModelData) {
@@ -1664,9 +1728,19 @@ class MainActivity : FragmentActivity() {
                                 tvStatus.text = "No GGUF models found for '$query'"
                                 rvResults.adapter = null
                             } else {
-                                tvStatus.text = "${results.size} models found (tap to select)"
+                                // Vendors republish the same base model, so
+                                // group them: one row per model, expand to
+                                // pick which vendor's quant to use.
+                                val groups = groupHfModels(results)
+                                val repoCount = groups.sumOf { it.repos.size }
+                                tvStatus.text =
+                                    if (repoCount == groups.size) {
+                                        "${groups.size} models found (tap to select)"
+                                    } else {
+                                        "${groups.size} models from $repoCount repos — tap to expand"
+                                    }
                                 rvResults.adapter =
-                                    HfModelAdapter(results) { model ->
+                                    HfModelGroupAdapter(groups) { model ->
                                         selectedRepoId = model.id
                                         tvSelectedRepo.text = "Repo: ${model.id}"
                                         tvStatus.text = "Loading file list..."
@@ -1955,6 +2029,20 @@ class MainActivity : FragmentActivity() {
 
         private fun formatMegabytes(bytes: Long): String =
             String.format(Locale.US, "%.1f", bytes / 1048576.0)
+
+        /**
+         * Size with a unit that fits. [formatMegabytes] always reported MB,
+         * so a 2.8 GB model came out as "2877.4 MB".
+         */
+        private fun formatBytes(bytes: Long): String {
+            if (bytes < 0) return "?"
+            return when {
+                bytes < 1024 -> "$bytes B"
+                bytes < 1024 * 1024 -> String.format(Locale.US, "%.0f KB", bytes / 1024.0)
+                bytes < 1024 * 1024 * 1024 -> String.format(Locale.US, "%.1f MB", bytes / 1048576.0)
+                else -> String.format(Locale.US, "%.2f GB", bytes / 1073741824.0)
+            }
+        }
 
         private fun formatDuration(seconds: Long): String =
             when {

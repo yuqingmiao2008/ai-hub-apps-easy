@@ -31,7 +31,7 @@
             android:gravity="center"
             android:text="Select Folder"
             android:textAllCaps="false"
-            android:textColor="#1f1f1f"
+            android:textColor="@color/font_primary"
             android:textSize="16sp"
             android:textStyle="bold" />
     </FrameLayout>
@@ -39,7 +39,7 @@
     <View
         android:layout_width="match_parent"
         android:layout_height="1dp"
-        android:background="#E7E7E7" />
+        android:background="@color/divider" />
 
     <ScrollView
         android:layout_width="match_parent"
@@ -51,7 +51,7 @@
             android:layout_height="wrap_content"
             android:layout_margin="16dp"
             android:letterSpacing="0.02"
-            android:textColor="#1F1F1F"
+            android:textColor="@color/font_primary"
             android:textSize="16sp" />
     </ScrollView>
 

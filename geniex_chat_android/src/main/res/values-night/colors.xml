@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AMOLED night palette.
+
+     background/surface are true #000000: on an OLED panel a black pixel is
+     simply off, which is the whole point. Material's default night surface
+     (#121212) is deliberately not used here.
+
+     surface_variant is lifted to #0A0A0A instead: pure black behind a
+     scrolling list produces visible smearing, because OLED pixels switch
+     noticeably slower than the display refreshes. A near-black that is still
+     effectively "off" avoids it. -->
+<resources>
+    <color name="purple_200">#FFBB86FC</color>
+    <color name="purple_500">#FFBB86FC</color>
+    <color name="purple_700">#FF3700B3</color>
+    <color name="teal_200">#FF03DAC5</color>
+    <color name="teal_700">#FF03DAC5</color>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="bg_normal">#000000</color>
+    <color name="font_black">#E6E6E6</color>
+    <color name="font_gray">#8A8A8A</color>
+
+    <!-- Base surfaces: pure black for AMOLED. -->
+    <color name="background">#000000</color>
+    <color name="surface">#000000</color>
+    <color name="surface_variant">#0A0A0A</color>
+    <color name="surface_tint">#12262A</color>
+
+    <!-- Text. -->
+    <color name="font_primary">#E6E6E6</color>
+    <color name="font_secondary">#B0B0B0</color>
+    <color name="font_tertiary">#8A8A8A</color>
+    <color name="font_hint">#5A5A5A</color>
+
+    <!-- Lines and shapes. -->
+    <color name="divider">#1F1F1F</color>
+    <color name="stroke">#B0B0B0</color>
+    <color name="scrim">#88000000</color>
+
+    <!-- Primary action button: light on black, so it still reads as the
+         primary action instead of blending into the background. -->
+    <color name="button_bg">#E6E6E6</color>
+    <color name="button_fg">#000000</color>
+</resources>

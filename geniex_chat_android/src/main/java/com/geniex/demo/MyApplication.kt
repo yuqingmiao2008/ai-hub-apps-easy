@@ -6,11 +6,15 @@ package com.geniex.demo
 
 import android.app.Application
 import android.util.Log
+import com.geniex.demo.utils.ThemeSettings
 import java.io.File
 
 class MyApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        // Must run before any activity is created, so the right palette is
+        // in place on the very first frame.
+        ThemeSettings.init(this)
         clearLegacyModelsDir()
     }
 

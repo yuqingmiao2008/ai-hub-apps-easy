@@ -1,8 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.GenieXDemo" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- DayNight so the -night resources kick in. The previous parent was the
+         platform Material.Light theme, which is light-only; the app theme in
+         the manifest was the library's Light variant for the same reason. -->
+    <style name="Theme.GenieXDemo" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/background</item>
+        <item name="colorPrimary">@color/purple_500</item>
+        <item name="colorPrimaryVariant">@color/purple_700</item>
+        <item name="colorSecondary">@color/teal_200</item>
+        <!-- Needed for AppCompatDelegate.setDefaultNightMode() to drive the
+             in-app theme switch. -->
+        <item name="android:windowLightStatusBar">?attr/isLightTheme</item>
+    </style>
 
-    <style name="TransparentBottomSheetDialog" parent="Theme.Design.Light.BottomSheetDialog">
+    <style name="TransparentBottomSheetDialog" parent="Theme.MaterialComponents.BottomSheetDialog">
         <item name="android:windowBackground">@android:color/transparent</item>
     </style>
 </resources>

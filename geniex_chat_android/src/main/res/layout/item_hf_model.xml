@@ -1,27 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- One vendor repo, nested under an item_hf_group header. The extra start
+     padding is what visually marks it as a child row. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:padding="12dp"
+    android:paddingStart="28dp"
+    android:paddingEnd="12dp"
+    android:paddingTop="8dp"
+    android:paddingBottom="8dp"
     android:background="?android:attr/selectableItemBackground">
 
     <TextView
         android:id="@+id/tv_hf_model_id"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:textColor="#1F1F1F"
-        android:textSize="14sp"
-        android:textStyle="bold"
-        android:maxLines="1"
-        android:ellipsize="end" />
+        android:textColor="@color/font_black"
+        android:textSize="13sp"
+        android:maxLines="2"
+        android:ellipsize="middle" />
 
     <TextView
         android:id="@+id/tv_hf_model_meta"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="2dp"
-        android:textColor="#888888"
+        android:textColor="@color/font_gray"
         android:textSize="11sp"
         android:maxLines="1"
         android:ellipsize="end" />

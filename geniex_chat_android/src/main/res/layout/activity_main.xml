@@ -51,7 +51,7 @@
                 android:background="@drawable/btn_rounded_border"
                 android:text="Download"
                 android:textAllCaps="false"
-                android:textColor="#1F1F1F" />
+                android:textColor="@color/font_primary" />
 
             <Button
                 android:id="@+id/btn_load_model"
@@ -61,7 +61,7 @@
                 android:background="@drawable/btn_rounded_border"
                 android:text="Load"
                 android:textAllCaps="false"
-                android:textColor="#1F1F1F" />
+                android:textColor="@color/font_primary" />
 
             <Button
                 android:id="@+id/btn_unload_model"
@@ -71,7 +71,7 @@
                 android:background="@drawable/btn_rounded_border"
                 android:text="Unload"
                 android:textAllCaps="false"
-                android:textColor="#1F1F1F"
+                android:textColor="@color/font_primary"
                 android:visibility="gone"
                 tools:visibility="gone" />
 
@@ -83,7 +83,7 @@
                 android:background="@drawable/btn_rounded_border"
                 android:text="Stop"
                 android:textAllCaps="false"
-                android:textColor="#1F1F1F"
+                android:textColor="@color/font_primary"
                 android:visibility="gone"
                 tools:visibility="gone" />
 
@@ -93,7 +93,7 @@
             android:layout_width="match_parent"
             android:layout_height="1dp"
             android:layout_marginTop="8dp"
-            android:background="#E7E7E7" />
+            android:background="@color/divider" />
 
         <Button
             android:id="@+id/btn_test"
@@ -117,7 +117,7 @@
                 android:background="@drawable/btn_rounded_border_gray"
                 android:text="HF Search"
                 android:textAllCaps="false"
-                android:textColor="#1F1F1F" />
+                android:textColor="@color/font_primary" />
             <Button
                 android:id="@+id/btn_import_model"
                 android:layout_width="wrap_content"
@@ -126,7 +126,7 @@
                 android:background="@drawable/btn_rounded_border_gray"
                 android:text="Import GGUF"
                 android:textAllCaps="false"
-                android:textColor="#1F1F1F" />
+                android:textColor="@color/font_primary" />
             <Button
                 android:id="@+id/btn_delete_custom"
                 android:layout_width="wrap_content"
@@ -135,7 +135,19 @@
                 android:background="@drawable/btn_rounded_border_gray"
                 android:text="Del Custom"
                 android:textAllCaps="false"
-                android:textColor="#1F1F1F" />
+                android:textColor="@color/font_primary" />
+
+            <!-- Cycles Auto -> Light -> Dark. The label is set from code so it
+                 reflects the persisted value rather than the current theme. -->
+            <Button
+                android:id="@+id/btn_theme"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginEnd="8dp"
+                android:background="@drawable/btn_rounded_border_gray"
+                android:text="Theme: Auto"
+                android:textAllCaps="false"
+                android:textColor="@color/font_primary" />
         </LinearLayout>
 
         <FrameLayout
@@ -195,7 +207,7 @@
                         android:hint="Type prompt..."
                         android:padding="6dp"
                         android:text="hi"
-                        android:textColorHint="#ADADAD"
+                        android:textColorHint="@color/font_hint"
                         android:imeOptions="actionSend"
                         android:inputType="text" />
 
@@ -226,7 +238,7 @@
                                 android:singleLine="true"
                                 android:text="Add Image"
                                 android:textAllCaps="false"
-                                android:textColor="#1F1F1F"
+                                android:textColor="@color/font_primary"
                                 android:visibility="invisible" />
 
                         </LinearLayout>
@@ -249,7 +261,7 @@
                                 android:singleLine="true"
                                 android:text="Clear"
                                 android:textAllCaps="false"
-                                android:textColor="#1F1F1F" />
+                                android:textColor="@color/font_primary" />
 
                             <Button
                                 android:id="@+id/btn_send"
@@ -262,7 +274,7 @@
                                 android:singleLine="true"
                                 android:text="Send"
                                 android:textAllCaps="false"
-                                android:textColor="#1F1F1F" />
+                                android:textColor="@color/font_primary" />
                         </LinearLayout>
                     </LinearLayout>
                 </LinearLayout>
@@ -282,17 +294,25 @@
         android:visibility="invisible"
         tools:visibility="visible">
 
+        <!-- A determinate bar: the old one had no style, so it was just the
+             indeterminate spinner and never tracked actual progress. -->
         <ProgressBar
             android:id="@+id/pb_downloading"
-            android:layout_width="wrap_content"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="240dp"
             android:layout_height="wrap_content"
-            android:layout_gravity="center" />
+            android:layout_gravity="center"
+            android:max="100"
+            android:progress="0" />
 
         <TextView
             android:id="@+id/tv_download_progress"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="0%" />
+            android:layout_marginTop="10dp"
+            android:gravity="center"
+            android:text="@string/download_preparing"
+            android:textSize="13sp" />
 
         <LinearLayout
             android:layout_width="wrap_content"

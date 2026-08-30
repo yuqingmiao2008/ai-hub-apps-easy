@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:orientation="vertical"
-    android:background="#ffffff"
+    android:background="@color/surface"
     android:padding="8dp"
     android:layout_width="wrap_content"
     android:layout_height="wrap_content">
@@ -12,8 +12,8 @@
         android:layout_height="wrap_content"
         android:text="Camera"
         android:visibility="gone"
-        android:background="#ffffff"
-        android:textColor="#1F1F1F"
+        android:background="@color/surface"
+        android:textColor="@color/font_primary"
         android:textAllCaps="false" />
 
     <Button
@@ -22,7 +22,7 @@
         android:layout_height="wrap_content"
         android:text="Photos"
         android:textAllCaps="false"
-        android:background="#ffffff"
-        android:textColor="#1F1F1F"
+        android:background="@color/surface"
+        android:textColor="@color/font_primary"
         android:layout_marginTop="4dp"/>
 </LinearLayout>
